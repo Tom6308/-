@@ -1,5 +1,5 @@
 /*
- * 黄果短剧 · Arcane JS 模块 v1.0.8（upload.py 转换版）
+ * 黄果短剧 · Arcane JS 模块 v1.0.9（upload.py 转换版）
  * ============================================================
  * upload.py（TVBox / 影视仓 Python 源，原作者“无聊”，v2 2026-11-08）
  * 转换成的 JS 模块，给 Arcane（CatPaw / com.catpaw.appleplayer.ios）用。
@@ -10,6 +10,26 @@
  *  - 模块入口（首页推荐架）：Rex 模块中心读本文件末尾的
  *    WidgetMetadata 与全局函数（经典脚本加载）。
  * 装一个入口就行，两个都装也可以（内容一致，互不冲突）。
+ *
+ * v1.0.9（2026-11-15）：Brooks 站源首页报“站源请求失败（HTTP 500）：
+ * JS call timed out”——home() 撞上 TVBox 引擎 30 秒上限。根因不在
+ * 某一接口慢，而是三处串行累加：① `_getText` 单次 15 秒 × 默认重试
+ * 2 次 = 单个逻辑调用最长 30 秒；② `_discoverHosts` 全串行：地址发布
+ * 接口 2 站（各 15 秒）+ 发布页脚本 8 秒 + 域名池逐个探测（各 15
+ * 秒），存的域名一旦失效就轻松超 100 秒；③ home() 里 _getTags、
+ * _getTopics、homeVideo 也是串行等。改动：
+ *   ① `_raw` 里 tvbox `req()` 加 `async: true`：默认 req() 是同步
+ *      阻塞（worker.js syncRequest，Atomics.wait），Promise.all 并行
+ *      不起作用；async 走 network.js 的异步 request()，同形同
+ *      timeout，并行才真正生效。Rex Widget.http / fetch 本来就是
+ *      异步，不受影响。
+ *   ② `_getText` 超时 15000 → 6000 毫秒（单次失败快进快出）。
+ *   ③ `_discoverHosts` 全并行：两个地址发布接口 + 发布页脚本并发
+ *      取，域名池并发探测、按池顺序取第一个可用。最坏约 12 秒。
+ *   ④ home() 里 _getTags、_getTopics、homeVideo 并行取（Promise.all，
+ *      三者互不依赖）。最坏约 12 秒。
+ *   ⑤ `_api` 换域后第二次 `_getJson` 用 retry=0（单次），不再 2 次
+ *      重试拖时间。home() 整体最坏约 24 秒，30 秒上限内。
  *
  * v1.0.8（2026-11-15）：Brooks 又发来两份——huangguo-fixed.js 与
  * huangguo-cover-worker.js。Worker 是模块封面的真正解法：Cloudflare
@@ -502,7 +522,13 @@ var spider = {
     opts = opts || {};
     var headers = opts.headers || this._authHeaders();
     var timeout = opts.timeout || 12000;
-    var callOpts = { headers: headers, timeout: timeout };
+    // v1.0.9：tvbox req() 默认是同步阻塞（worker.js syncRequest，
+    // Atomics.wait），这时 Promise.all 的“并行”只是排队等，域名发现
+    // 与 home() 三路会串行累加到超 30 秒。async:true 走 network.js
+    // 的异步 request()，返回同形 { code, status, headers, content,
+    // url }、同样认 timeout，并行才真正生效。Rex Widget.http 与
+    // fetch 本来就是异步，不受这个标志影响。
+    var callOpts = { headers: headers, timeout: timeout, async: true };
     if (opts.buffer) callOpts.buffer = opts.buffer;
     if (opts.method) callOpts.method = opts.method;
     if (opts.body !== undefined) callOpts.body = opts.body;
@@ -596,7 +622,10 @@ var spider = {
     }
     var attempts = (retry === undefined ? 1 : retry) + 1;
     for (var a = 0; a < attempts; a++) {
-      var raw = await this._raw(url, { headers: headers || this._authHeaders(), timeout: 15000 });
+      // v1.0.9：单次超时 15000 → 6000。15 秒 × 2 次重试 = 单个逻辑
+      // 调用最长 30 秒，home() 三路串行就直接撞 30 秒上限。6 秒
+      // 对 JSON/HTML 接口足够（实测均 < 2 秒），失败快进快出。
+      var raw = await this._raw(url, { headers: headers || this._authHeaders(), timeout: 6000 });
       if (raw && raw.code === 200 && raw.text) {
         var txt = raw.text;
         if (this._looksError(txt)) return null;
@@ -655,33 +684,40 @@ var spider = {
       push(self._localGet('host'));
       try { var sc = self._localGet('config'); if (sc) self._applyConfig(sc); } catch (e) { /* ignore */ }
       push(self.host);
-      // 2) 官方地址发布接口（当前站 + 默认站各试一次）
+      // 2) 官方地址发布接口（当前站 + 默认站）与地址发布页脚本 ——
+      //    并行取（v1.0.9：原来串行取，弱网下每个 15 秒，累加超
+      //    30 秒；现在并发，最慢一路约 6~8 秒）。两个发布接口都
+      //    取，地址按自家站优先的顺序合并进池。
       var posterHosts = [self.host, POSTER_HOST];
-      for (var i = 0; i < posterHosts.length; i++) {
-        try {
-          var poster = await self._getJson(posterHosts[i] + '/api/site/address-poster', null, 0);
-          var addrs = poster && poster.data && poster.data.config && poster.data.config.addresses;
-          if (Array.isArray(addrs)) {
-            addrs.forEach(function (a) { if (a && !a.hidden) push(a.url); });
-          }
-          if (poster) break;
-        } catch (e) { /* ignore */ }
-      }
-      // 3) 地址发布页脚本（Cloudflare Pages，一般可达）
-      try {
-        var raw = await self._raw(PUBLISH_JS, { timeout: 8000 });
-        if (raw && raw.text) {
-          var m = raw.text.match(/https:\/\/[a-zA-Z0-9.\-]+/g) || [];
-          m.forEach(function (u) {
-            if (u.indexOf('pages.dev') < 0) push(u);
-          });
+      var posterJobs = posterHosts.map(function (h) {
+        return self._getJson(h + '/api/site/address-poster', null, 0).catch(function () { return null; });
+      });
+      var publishJob = self._raw(PUBLISH_JS, { timeout: 6000 }).catch(function () { return null; });
+      var settled = await Promise.all(posterJobs.concat([publishJob]));
+      settled.forEach(function (poster, idx) {
+        if (idx >= posterHosts.length) return;
+        var addrs = poster && poster.data && poster.data.config && poster.data.config.addresses;
+        if (Array.isArray(addrs)) {
+          addrs.forEach(function (a) { if (a && !a.hidden) push(a.url); });
         }
-      } catch (e) { /* ignore */ }
-      // 4) 内置候选
+      });
+      var publishRaw = settled[posterHosts.length];
+      if (publishRaw && publishRaw.text) {
+        var m = publishRaw.text.match(/https:\/\/[a-zA-Z0-9.\-]+/g) || [];
+        m.forEach(function (u) {
+          if (u.indexOf('pages.dev') < 0) push(u);
+        });
+      }
+      // 3) 内置候选
       DEFAULT_HOSTS.forEach(push);
-      // 逐个探测，第一个可用的胜出
+      // 4) 并行探测（v1.0.9：原来逐个等，N 个域名 × 15 秒；现在并发，
+      //    最慢一路约 6 秒）。胜出按池内顺序取第一个可用——先响应的
+      //    不一定先胜出，排前面的优先。
+      var probed = await Promise.all(pool.map(function (h) {
+        return self._probeHost(h).catch(function () { return false; });
+      }));
       for (var j = 0; j < pool.length; j++) {
-        if (await self._probeHost(pool[j])) {
+        if (probed[j]) {
           self._applyHost(pool[j]);
           self._hostOk = true;
           self._hostCheckedAt = Date.now();
@@ -727,7 +763,9 @@ var spider = {
     this._hostOk = false;
     await this._discoverHosts();
     if (this.host + path !== url) {
-      json = await this._getJson(this.host + path, opts);
+      // v1.0.9：换域后第二次只试一次（retry=0）。换域前已花了 2 次
+      // 重试 + 一次发现，再 2 次重试会把单次调用拖到 30 秒外。
+      json = await this._getJson(this.host + path, opts, 0);
       if (json) return json;
     }
     return null;
@@ -856,13 +894,23 @@ var spider = {
     // v1.0.5：分类与官网一致（2026-11-15 实测官网导航）：
     // 热门推荐 / 最近上新 / 黄果原创 / 4 个基础分类 / 20 个题材 /
     // 专题合集 / 排行榜 / 黄果吃瓜。标题里的 emoji 与官网导航对应。
+    // v1.0.9：_getTags、_getTopics、homeVideo 三路并行取（Promise.all，
+    // 三者互不依赖；原来串行等，弱网下各 12 秒累加超 30 秒）。任一
+    // 路失败只影响自己的那块（标签筛选项 / 专题入口 / 推荐列表），
+    // 分类本身照常出——首页不再因一路挂掉而整屏超时。
+    var settled = await Promise.all([
+      this._getTags().catch(function () { return []; }),
+      this._getTopics().catch(function () { return []; }),
+      this.homeVideo().catch(function () { return { list: [] }; }),
+    ]);
+    var tags = settled[0] || [];
+    var topics = settled[1] || [];
+    var hv = settled[2] || { list: [] };
     result['class'].push({ type_id: 'recommend', type_name: '🔥热门推荐' });
     result['class'].push({ type_id: 'newest', type_name: '🆕最近上新' });
     result['class'].push({ type_id: 'original', type_name: '✨黄果原创' });
-    var tags = await this._getTags();
     var tagValues = [{ n: '全部', v: '' }];
     tags.forEach(function (t) { tagValues.push({ n: t.name, v: t.slug }); });
-    var self = this;
     BASE_CATES.forEach(function (c) {
       result['class'].push({ type_id: c.id, type_name: c.name });
       result.filters[c.id] = [
@@ -877,7 +925,6 @@ var spider = {
     HOME_TAGS.forEach(function (t) {
       result['class'].push({ type_id: t.slug, type_name: t.name });
     });
-    var topics = await this._getTopics();
     if (topics && topics.length > 0) {
       result['class'].push({ type_id: 'topics', type_name: '📚专题合集' });
       result.filters['topics'] = [{
@@ -901,13 +948,9 @@ var spider = {
         { n: 'AI原创', v: 'yuanchuang' },
       ],
     }];
-    // 首页推荐位（必须有 list，否则首页空白）
-    try {
-      var hv = await this.homeVideo();
-      result.list = hv.list || [];
-    } catch (e) {
-      result.list = [];
-    }
+    // 首页推荐位（必须有 list，否则首页空白；hv 已在开头的
+    // Promise.all 里并行取到，这里只组装）
+    result.list = hv.list || [];
     return result;
   },
 
@@ -2136,7 +2179,7 @@ globalThis.__JS_SPIDER__ = spider;
 // （Arcane 的模块行不渲染文本输入框，那个入口点进去是“暂无内容”）。
 var WidgetMetadata = {
   name: '黄果短剧',
-  version: '1.0.8',
+  version: '1.0.9',
   id: 'huangguo.duanju.upload',
   author: 'Muse',
   description: '黄果短剧（upload.py 转换版）：热门推荐/最近上新/黄果原创、AI短剧/漫剧/换脸/魔改、20 个官网题材、专题合集、排行榜、黄果吃瓜；域名自动发现，直链播放',

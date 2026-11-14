@@ -233,8 +233,35 @@ Worker 中转真图、线上 Worker 实时解密 200 + Content-Length + JPEG；
 jsDelivr purge 后已是 v1.0.8，200、106,856 字节、md5 `bb652142…` 与
 本地逐字节一致）。
 
-> 直链（GitHub，永久，2026-11-15 01:15 已验证：200、106,856 字节、与本地
-> v1.0.8 逐字节一致）：主用 jsDelivr
+**v1.0.9 的变化（2026-11-15，修站源首页超时 “JS call timed out”）**：
+Brooks 装上 v1.0.8 后站源首页报错“站源请求失败（HTTP 500）：JS
+call timed out”——home() 撞上 TVBox 引擎 30 秒上限。根因是三处串行
+累加：① `_getText` 单次 15 秒 × 默认重试 2 次 = 单个逻辑调用最长
+30 秒；② `_discoverHosts` 全串行：地址发布接口 2 站（各 15 秒）+
+发布页脚本 8 秒 + 域名池逐个探测（各 15 秒），存的域名一旦失效就
+轻松超 100 秒；③ home() 里 _getTags、_getTopics、homeVideo 也是
+串行等。改动：① `_raw` 里 tvbox `req()` 加 `async: true`——默认
+req() 是同步阻塞（worker.js syncRequest，Atomics.wait），Promise.all
+并行不起作用；async 走 network.js 的异步 request()，同形同
+timeout，并行才真正生效（Rex Widget.http / fetch 本来就是异步）；
+② `_getText` 超时 15000 → 6000 毫秒；③ `_discoverHosts` 全并行
+（两个地址发布接口 + 发布页脚本并发取，域名池并发探测、按池顺序
+取第一个可用，最坏约 12 秒）；④ home() 里三路并行取（Promise.all，
+最坏约 12 秒）；⑤ `_api` 换域后第二次只试一次（retry=0）。
+
+实测：暖 home() 508 毫秒；**死域名（清缓存、强制重新发现）home()
+2081 毫秒**；另写 probe_timeout.mjs 模拟“挂起域名”（只接 TCP、永不
+回数据的黑洞服务器，吃满每个超时）：home() 1951 毫秒，冷启动
+12489 毫秒——都远在 30 秒内，内容完整（30 个分类、20 条推荐）。
+测试 183/183 通过（含 3 项 v1.0.9 新检查：暖 home() 计时、死域名
+home() 计时、`_raw` 传 async:true）。注意：Brooks 的 v1.0.8 模块录屏
+已证实模块路线本身走不通（封面仍空、详情页仍是 TMDB 驱动），v1.0.9
+修的是站源路线——请用站源装 v1.0.9（先删旧源再重加同一条链接，
+Arcane 按地址缓存 JS，不删会继续用缓存的旧版）。
+**v1.0.9 已推到同一 GitHub 仓库（commit 待填）**，见下方直链。
+
+> 直链（GitHub，永久，2026-11-15 已验证：200、110,471 字节、与本地
+> v1.0.9 逐字节一致）：主用 jsDelivr
 > `https://cdn.jsdelivr.net/gh/Tom6308/-@main/huangguo-upload.js`
 > （Content-Type: application/javascript），备用 GitHub raw
 > `https://raw.githubusercontent.com/Tom6308/-/main/huangguo-upload.js`。
@@ -252,7 +279,7 @@ jsDelivr purge 后已是 v1.0.8，200、106,856 字节、md5 `bb652142…` 与
 
 ```text
 huangguo_arcane/
-├── huangguo-upload.js   # JS 模块 v1.0.8（upload.py 转换，站源 + Rex 二合一，无 export）
+├── huangguo-upload.js   # JS 模块 v1.0.9（upload.py 转换，站源 + Rex 二合一，无 export）
 │                         # 站源入口加载它：首页/分类/详情/搜索/播放/图片代理；
 │                         # 模块入口加载它：首页推荐架 + 搜索 + 详情 + 播放源
 ├── huangguo.js           # JS 模块 v4.0.0（AI.py 改写，站源 + Rex 二合一，无 export）
@@ -268,7 +295,7 @@ huangguo_arcane/
 └── README.md            # 本说明
 ```
 
-主文件有两个（都能独立用，装一个就行）：`huangguo-upload.js` v1.0.8
+主文件有两个（都能独立用，装一个就行）：`huangguo-upload.js` v1.0.9
 （upload.py 转换版，多了吃瓜）和 `huangguo.js` v4.0.0（AI.py 改写版，
 分类更多，31 个）。一个文件两个入口，行为一致；**装一个入口就行**。
 旧的纯站源版（`huangguo-arcane.js` v3.3.3）保留在目录里仅作参照，
@@ -523,17 +550,16 @@ node --experimental-vm-modules test_v4.mjs
 # RESULT: PASS 87 / FAIL 0
 ```
 
-### v1.0.8（upload.py 转换版）测试结果
+### v1.0.9（upload.py 转换版）测试结果
 
 测试方法：`node --experimental-vm-modules test_upload.mjs`，与 v4.0.0
 同样的两种运行时模拟（tvbox 沙箱 `vm.SourceTextModule` +
 `__JS_SPIDER__`；Rex 沙箱经典脚本 + `WidgetMetadata`），再对真实 API
-做全量 live 测试。2026-11-15 01:15 结果：**180/180 通过**（v1.0.7
-为 169/169，新增 11 项 v1.0.8 检查：Worker 地址识别（workers.dev
-与 localhost 原样通过）、`_isWorkerRelay`（Worker 真、Netlify 假、
-默认中转真）、Worker 中转下列表/详情封面是 Worker 中转真图、线上
-Worker 实时解密 200 + Content-Length + JPEG、Netlify 中转仍回落
-标题海报）。
+做全量 live 测试。2026-11-15 01:35 结果：**183/183 通过**（v1.0.8
+为 180/180，新增 3 项 v1.0.9 检查：暖 home() 计时 508 毫秒、死域名
+home() 计时 2081 毫秒、`_raw` 传 async:true；另写 probe_timeout.mjs
+模拟黑洞挂起域名：home() 1951 毫秒，冷启动 12489 毫秒，均 < 30 秒，
+内容完整）。
 
 | 检查点 | 结果 |
 |---|---|
@@ -555,8 +581,8 @@ Worker 实时解密 200 + Content-Length + JPEG、Netlify 中转仍回落
 | **`_wrapPic` v1.0.6 起默认走本地代理（`coverRelayFirst=false`，`vod_pic` 是 `127.0.0.1` 本地 /proxy 地址）；`coverRelayFirst=true` 时走中转；`api_base` 换入口；裸中转链接识别与 `?u=` 剥离** | **通过（v1.0.6 更新）** |
 | **本地代理封面全链路：拿一条首页 `vod_pic`（本地 /proxy 地址），按 Arcane /proxy 处理器的方式调 `spider.proxy()`，返回 200 真图（JPEG 或 PNG）** | **通过（v1.0.6 新增）** |
 | **分类页回归：AI换脸（filter 与 extend 两种传法都通，20/28 条）、熟女 28 条、乱伦 28 条、ai-duanju filter sort=hot、排行榜 filter rank_type=potential** | **通过（v1.0.6 新增）** |
-| 域名轮换：host 指到死域名后自动回到可用域名并返回内容 | 通过 |
-| Rex：元数据 v1.0.8、31 个模块、搜索、详情 21 集、吃瓜详情、播放源 | 通过 |
+| 域名轮换：host 指到死域名后自动回到可用域名并返回内容；**v1.0.9：死域名 home() 2081 毫秒（清缓存实测）、暖 home() 508 毫秒，黑洞挂起域名 home() 1951 毫秒、冷启动 12489 毫秒，均 < 30 秒** | 通过（v1.0.9 更新） |
+| Rex：元数据 v1.0.9、31 个模块、搜索、详情 21 集、吃瓜详情、播放源 | 通过 |
 | **Rex 播放：`loadResource` `hgdj|12|1`/`hgdj|12|2` 均为 `parse: 0` + m3u8 + `x-cdn-auth`，`format: hls`；对象 `{link}` 参数也通** | **通过** |
 | **Rex 封面 v1.0.8：列表/详情的 `posterPath`/`backdropPath`/`cover`/`coverUrl` 都是 Worker 中转真图地址（`huangguo-cover.tang72276.workers.dev?u=…`，线上 Worker 实测 200 + Content-Length + JPEG）；默认中转已是 Worker，不再是 Netlify；Netlify 中转时仍换标题海报（v1.0.7 兜底）；永不 `proxy://`** | **通过（v1.0.8 更新）** |
 | **Rex 点条目：条目带 `type: 'url'` + `mediaType: 'tv'` 与 `link: 'huangguo:<id>'`；拿条目的 `link` 调 `loadDetail` 能拿到详情和集数（模拟 App 点条目链路）** | **通过（v1.0.7 更新，v1.0.3 新增）** |
@@ -569,7 +595,7 @@ Worker 实时解密 200 + Content-Length + JPEG、Netlify 中转仍回落
 
 ```bash
 node --experimental-vm-modules test_upload.mjs
-# RESULT: PASS 169 / FAIL 0
+# RESULT: PASS 183 / FAIL 0
 ```
 
 > 注意：`gorgeous-beijinho-70a410` 站上的仍是 v1.0.3（v1.0.4 与
@@ -577,7 +603,14 @@ node --experimental-vm-modules test_upload.mjs
 
 ## 已知问题（诚实说明，不藏着）
 
-1. **Arcane 真机上的 POST 透传尚未验证**：`_raw()` 会把 `method`/`body`
+1. **模块路线在真机上走不通（2026-11-15 01:24 录屏证实，v1.0.0–v1.0.8 八个
+   版本都一样）**：模块页的封面与详情都是 TMDB 驱动的——它把
+   posterPath 当 TMDB 图片路径去拼 image.tmdb.org 前缀，完整中转地址
+   拼上去就成坏地址；详情页拿标题去 TMDB 模糊匹配，黄果标题不在
+   TMDB 上所以永远没有选集（枪欲玫瑰被匹配成 Guns N' Roses 乐队）。
+   **请用站源路线**（资源库 → + → 添加 Python 链接），那里的列表、
+   封面、播放全是我们的代码在管，不经过 TMDB。
+2. **Arcane 真机上的 POST 透传尚未验证**：`_raw()` 会把 `method`/`body`
    传给沙箱的 `req()`；本机测试桩用 Node `fetch` 验证了完整链路
    （62/62），但 Arcane 的 `tvbox_js/network.js` 是否真的透传这两个
    选项，没法在真机外 100% 确认。如果在你手机上点播放后仍是网页解析
