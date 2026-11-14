@@ -229,7 +229,7 @@ Content-Length 174816 + image/jpeg；另有同名 Pages 项目
 v1.0.8 新检查：Worker 地址识别、默认中转是 Worker、Rex 封面是
 Worker 中转真图、线上 Worker 实时解密 200 + Content-Length + JPEG；
 另有 1 次 probe_tap 里 Worker 对 枪欲玫瑰 封面返回 503，重试即
-200，是一过性上游波动）。已推到同一 GitHub 仓库（commit 待填，
+200，是一过性上游波动）。已推到同一 GitHub 仓库（commit f71ee95f，
 jsDelivr purge 后已是 v1.0.8，200、106,856 字节、md5 `bb652142…` 与
 本地逐字节一致）。
 
