@@ -258,13 +258,16 @@ home() 计时、`_raw` 传 async:true）。注意：Brooks 的 v1.0.8 模块录�
 已证实模块路线本身走不通（封面仍空、详情页仍是 TMDB 驱动），v1.0.9
 修的是站源路线——请用站源装 v1.0.9（先删旧源再重加同一条链接，
 Arcane 按地址缓存 JS，不删会继续用缓存的旧版）。
-**v1.0.9 已推到同一 GitHub 仓库（commit 待填）**，见下方直链。
+**v1.0.9 已推到同一 GitHub 仓库（commit 5b6a014a）**，见下方直链。
 
-> 直链（GitHub，永久，2026-11-15 已验证：200、110,471 字节、与本地
-> v1.0.9 逐字节一致）：主用 jsDelivr
+> 直链（GitHub，永久）：主用 jsDelivr
 > `https://cdn.jsdelivr.net/gh/Tom6308/-@main/huangguo-upload.js`
 > （Content-Type: application/javascript），备用 GitHub raw
 > `https://raw.githubusercontent.com/Tom6308/-/main/huangguo-upload.js`。
+> 2026-11-15 约 01:42 验证：**raw 已是 v1.0.9**（200、110,471
+> 字节、md5 `79175f7c…` 与本地逐字节一致）；**jsDelivr 仍在更新**
+> （刚 purge 完，边缘缓存一度回到 v1.0.8 又到 v1.0.6，尚未稳定到
+> v1.0.9），请先用 raw 链接装，jsDelivr 稳定后再用它。
 > 文件存在 Brooks 的 GitHub 账号 Tom6308 的公开仓库 `-`（main 分支），
 > 更新时直接覆盖同名文件即可，链接不变。Netlify 本周期免费额度已用完
 > （2026-11-15 00:02 确认，到 12月8日恢复），不再用 Netlify 部署新版；
