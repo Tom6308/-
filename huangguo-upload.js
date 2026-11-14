@@ -1,5 +1,5 @@
 /*
- * 黄果短剧 · Arcane JS 模块 v1.0.5（upload.py 转换版）
+ * 黄果短剧 · Arcane JS 模块 v1.0.6（upload.py 转换版）
  * ============================================================
  * upload.py（TVBox / 影视仓 Python 源，原作者“无聊”，v2 2026-11-08）
  * 转换成的 JS 模块，给 Arcane（CatPaw / com.catpaw.appleplayer.ios）用。
@@ -10,6 +10,25 @@
  *  - 模块入口（首页推荐架）：Rex 模块中心读本文件末尾的
  *    WidgetMetadata 与全局函数（经典脚本加载）。
  * 装一个入口就行，两个都装也可以（内容一致，互不冲突）。
+ *
+ * v1.0.6（2026-11-15）：站源装上后首页/分类都有内容、但封面全空，
+ * 且点进 AI换脸/熟女/乱伦三个分类页是空的——针对这两处修：
+ *   ① 封面改走本地代理优先：站源里加密封面不再默认走 Netlify 中转
+ *      （中转响应是 chunked、无 Content-Length，手机的图片加载器
+ *      整屏都读不出来），改走 TVBox 原生本地代理——`vod_pic` 返回
+ *      `http://127.0.0.1:端口/proxy?source=…&type=img&url=…`，App
+ *      经本地 /proxy 调 spider.proxy() 解密后把原图字节直接交给
+ *      图片加载器。Rex 里没有本地代理，仍走中转（不受影响）。
+ *      ext {"coverRelayFirst": true} 可恢复中转优先。
+ *   ② AI换脸/AI魔改改走搜索优先：站方已下线这两个分类的 category
+ *      接口（返回空 + “内容已下线”），之前是先调 category 接口
+ *      （空）再调搜索兜底，两次请求串行，手机上点进分类页要等很久
+ *      才出内容；现在这两个分类直接调搜索（AI换脸 38 条、AI魔改
+ *      33 条），一次请求就出结果。
+ *   ③ category() 的筛选值以前只读 extend（第 4 个参数），
+ *      现在 filter（第 3 个参数）和 extend 两个都读、任一有值就用，
+ *      不管 Arcane 把筛选值放在哪个参数里，点进分类页都不会因为
+ *      读不到筛选值而返回空。
  *
  * v1.0.1（2026-11-14 晚）：封面全空的修复。v1.0.0 在模块里封面全空
  * （标题正常，只有图是占位符）：原因是 `_wrapPic` 在 Rex 里可能返回
@@ -332,7 +351,7 @@ var spider = {
   _token: '',
   _cookie: '',
   _coverRelay: COVER_RELAY,
-  _coverRelayFirst: true, // 默认 true：加密封面直接走 Netlify 中转；ext {"coverRelayFirst": false} 恢复本地代理优先
+  _coverRelayFirst: false, // v1.0.6 起默认 false：站源里加密封面走本地代理优先（TVBox 原生 /proxy，解密后原图字节直供图片加载器）；Rex 里没有本地代理，仍走中转。ext {"coverRelayFirst": true} 恢复中转优先
   _hostOk: false,
   _hostCheckedAt: 0,
   _discovering: null,
@@ -909,7 +928,13 @@ var spider = {
   category: async function (tid, pg, filter, extend) {
     var page = 1;
     try { page = Math.max(_num(pg, 1), 1); } catch (e) { page = 1; }
+    // v1.0.6：筛选值两个参数都读。TVBox 传 category(tid, pg, filter, extend)，
+    // filter（第 3 个）是分类页当前选中的筛选值，extend（第 4 个）是站源配置；
+    // 以前只读 extend，Arcane 若把筛选值放 filter 里就读不到。现在两个都读、
+    // 任一有值就用，避免点进分类页因读不到筛选值而返回空。
+    var f = (_isObj(filter)) ? filter : {};
     var ext = (_isObj(extend)) ? extend : {};
+    var sel = function (k) { return (f[k] !== undefined && f[k] !== null && f[k] !== '') ? f[k] : ext[k]; };
     tid = _str(tid);
     if (tid === 'recommend') {
       // 热门推荐：官网 /recommend SSR（v1.0.5 起，不再用 ai-duanju hot）
@@ -924,23 +949,23 @@ var spider = {
       return this._categorySsrList('/original/', page);
     }
     if (tid === 'ranks') {
-      return this._categoryRanks(ext.rank_type || 'hot', page);
+      return this._categoryRanks(sel('rank_type') || 'hot', page);
     }
     if (tid === 'topics') {
-      return this._categoryTopics(ext.topic || '', page);
+      return this._categoryTopics(sel('topic') || '', page);
     }
     if (tid === 'chigua') {
-      return this._categoryChigua(ext.cate || 'all', page);
+      return this._categoryChigua(sel('cate') || 'all', page);
     }
     if (HOME_TAG_SET[tid]) {
       // 官网题材分类（都市/古风/…）：走 /tag/{slug}/ SSR（v1.0.5 新增）
       return this._categoryTag(tid, page);
     }
-    var tag = _str(ext.tag || '').trim();
+    var tag = _str(sel('tag') || '').trim();
     if (tag) {
       return this._categoryTag(tag, page);
     }
-    var sort = ext.sort || 'latest';
+    var sort = sel('sort') || 'latest';
     if (sort === 'random') {
       return this._categoryApi(tid, 'random', 1);
     }
@@ -955,12 +980,25 @@ var spider = {
   _categoryApi: async function (baseId, sort, page) {
     var per = 20;
     var result = { list: [], page: page, pagecount: 1, limit: per, total: 0 };
-    var data = await this._api('/api/videos/category/' + encodeURIComponent(baseId) + '?page=' + page + '&size=' + per + '&sort=' + sort);
-    var d = (data && data.data) || {};
-    var items = d.items || [];
-    if (items.length === 0) {
-      var kw = { 'ai-huanlian': 'AI换脸', 'ai-mogai': 'AI魔改', 'ai-duanju': 'AI短剧', 'ai-manju': 'AI漫剧' }[baseId];
-      if (kw) {
+    // v1.0.6：ai-huanlian / ai-mogai 的 category 接口站方已下线（返回空 +
+    // “内容已下线”），这两个分类直接调搜索，不再先调一次注定为空的
+    // category 接口——点进分类页一次请求就出结果，不用串行等两次。
+    var kw = { 'ai-huanlian': 'AI换脸', 'ai-mogai': 'AI魔改', 'ai-duanju': 'AI短剧', 'ai-manju': 'AI漫剧' }[baseId];
+    var items = [];
+    if (baseId === 'ai-huanlian' || baseId === 'ai-mogai') {
+      var sdata0 = await this._api('/api/search?q=' + encodeURIComponent(kw) + '&page=' + page + '&size=' + per);
+      var sd0 = (sdata0 && sdata0.data) || {};
+      items = sd0.items || [];
+      var spg0 = sd0.pagination || {};
+      if (items.length > 0) {
+        result.total = spg0.total || items.length;
+        result.pagecount = Math.max(1, _num(spg0.pages, (items.length >= per ? page + 1 : page)));
+      }
+    } else {
+      var data = await this._api('/api/videos/category/' + encodeURIComponent(baseId) + '?page=' + page + '&size=' + per + '&sort=' + sort);
+      var d = (data && data.data) || {};
+      items = d.items || [];
+      if (items.length === 0 && kw) {
         var sdata = await this._api('/api/search?q=' + encodeURIComponent(kw) + '&page=' + page + '&size=' + per);
         var sd = (sdata && sdata.data) || {};
         items = sd.items || [];
@@ -969,6 +1007,10 @@ var spider = {
           result.total = spg.total || items.length;
           result.pagecount = Math.max(1, _num(spg.pages, (items.length >= per ? page + 1 : page)));
         }
+      } else if (items.length > 0) {
+        var pg0 = d.pagination || {};
+        result.total = pg0.total || items.length;
+        result.pagecount = Math.max(1, _num(pg0.pages, (items.length >= per ? page + 1 : page)));
       }
     }
     var seen = {};
@@ -985,9 +1027,8 @@ var spider = {
       });
     });
     if (result.total === 0) {
-      var pg = d.pagination || {};
-      result.total = pg.total || result.list.length;
-      result.pagecount = Math.max(1, _num(pg.pages, (result.list.length >= per ? page + 1 : page)));
+      result.total = result.list.length;
+      result.pagecount = Math.max(1, (result.list.length >= per ? page + 1 : page));
     }
     return result;
   },
@@ -1807,6 +1848,19 @@ var spider = {
     if (lastRaw) {
       return [200, _imageMime(lastRaw, imgUrl), lastRaw, {}];
     }
+    // v1.0.6：直取全失败后，再走一次中转兜底。_coverRelayFirst 关着时
+    // （v1.0.6 起站源默认关），循环里那次中转不会跑；但中转仍是最后一道
+    // 防线——直取失败不代表图不存在，先问中转，实在不行才回占位图。
+    if (this._coverRelay) {
+      var relayUrl2 = this._relayCover(imgUrl);
+      var rr2 = await this._raw(relayUrl2, { timeout: COVER_RELAY_TIMEOUT, buffer: 2 });
+      if (rr2 && rr2.code === 200 && rr2.text) {
+        var rb2 = _b64decodeToBytes(rr2.text);
+        if (rb2 && _isImageBytes(rb2)) {
+          return [200, _imageMime(rb2, imgUrl), rb2, {}];
+        }
+      }
+    }
     // 站方缺图/全候选失败：回占位图 200，避免真机裂图
     return [200, 'image/png', _b64decodeToBytes(PLACEHOLDER_B64), {}];
   },
@@ -1985,7 +2039,7 @@ globalThis.__JS_SPIDER__ = spider;
 // （Arcane 的模块行不渲染文本输入框，那个入口点进去是“暂无内容”）。
 var WidgetMetadata = {
   name: '黄果短剧',
-  version: '1.0.5',
+  version: '1.0.6',
   id: 'huangguo.duanju.upload',
   author: 'Muse',
   description: '黄果短剧（upload.py 转换版）：热门推荐/最近上新/黄果原创、AI短剧/漫剧/换脸/魔改、20 个官网题材、专题合集、排行榜、黄果吃瓜；域名自动发现，直链播放',
