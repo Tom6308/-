@@ -1,5 +1,5 @@
 /*
- * 黄果短剧 · Arcane JS 模块 v1.0.6（upload.py 转换版）
+ * 黄果短剧 · Arcane JS 模块 v1.0.7（upload.py 转换版）
  * ============================================================
  * upload.py（TVBox / 影视仓 Python 源，原作者“无聊”，v2 2026-11-08）
  * 转换成的 JS 模块，给 Arcane（CatPaw / com.catpaw.appleplayer.ios）用。
@@ -10,6 +10,30 @@
  *  - 模块入口（首页推荐架）：Rex 模块中心读本文件末尾的
  *    WidgetMetadata 与全局函数（经典脚本加载）。
  * 装一个入口就行，两个都装也可以（内容一致，互不冲突）。
+ *
+ * v1.0.7（2026-11-15）：Brooks 发来 upload.js（Forward 播放器的黄果
+ * 模块，作者 rex，v1.4.3）参考。模块里封面仍全空、点条目仍报“模块未
+ * 返回可播放集数”、详情页是 TMDB 驱动（枪欲玫瑰被匹配成 Guns N'
+ * Roses 乐队）——upload.js 里有三处可直接借鉴：
+ *   ① 条目与选集用 `type: 'url'` + `mediaType: 'tv'`（Forward/官方
+ *      模块的通用写法；之前 `type: 'huangguo'` 是 App 不认识的自造
+ *      类型，App 认不出是可播剧集，才退回 TMDB 匹配）。
+ *   ② 选集同时给 `episodes`、`episodeList`、`episodeItems` 三个键
+ *      （二进制里 `episodes` 与 `episodeList` 都有，`episodeItems` 是
+ *      Forward/rexhome 的写法；三个都给，不管 App 读哪个键都有），
+ *      每集再补 `seasonNumber`/`episodeNumber`/`playerType: 'app'`。
+ *   ③ Rex 里封面改用标题海报：加密封面在 Rex 里只能走 Netlify 中转，
+ *      中转响应 chunked、无 Content-Length，手机图片加载器整屏读不
+ *      出来（v1.0.0–v1.0.6 模块里封面全空的原因）；标题海报走
+ *      placehold.co，实测 200、带 Content-Length、480x720 真 PNG，
+ *      中文标题能正常渲染，保证列表有图。站源里本地代理能出真图，
+ *      不受影响（只替换中转地址的图，明文图直链保留）。
+ *   ④ loadResource 再补 `playerType: 'app'` + `customHeaders` +
+ *      `name`/`description`（Forward 的资源形状），与原有的
+ *      url/parse/header/format 并存。
+ *   upload.js 的播放用的旧 GET /api/videos/{id}/play?ep=（实测返回空
+ * video_url，已过时），不要；播放仍用已验证的 POST playback 接口。
+ *   它的封面代理 ai.wulii.de5.net 实测连不上（Empty reply），不要。
  *
  * v1.0.6（2026-11-15）：站源装上后首页/分类都有内容、但封面全空，
  * 且点进 AI换脸/熟女/乱伦三个分类页是空的——针对这两处修：
@@ -266,6 +290,23 @@ function _normalizeRelayUrl(u) {
     return s.replace(/\/?$/, '') + '/.netlify/functions/cover';
   }
   return '';
+}
+// v1.0.7：标题海报（upload.js / Forward 的做法，保证列表有图）。
+// placehold.co 实测 200、带 Content-Length、480x720 真 PNG，中文标题
+// 正常渲染。Rex 里加密封面只能走 Netlify 中转，中转响应 chunked、无
+// Content-Length，手机图片加载器读不出来；标题海报能正常显示。
+function _titlePoster(title) {
+  var label = String(title == null ? '' : title).trim() || '黄果';
+  if (label.length > 18) label = label.slice(0, 18);
+  return 'https://placehold.co/480x720/111111/FFD21C/png?font=source-sans-pro&text=' + encodeURIComponent(label);
+}
+// v1.0.7：一个封面地址是不是 Netlify 中转地址（是就说明它在 Rex 里
+// 显示不出来，该换成标题海报）。中转地址由 _relayCover 用 _coverRelay
+// 拼出来，所以前缀一定是归一化后的 _coverRelay（无效时回落默认）。
+function _isRelayUrl(url, relay) {
+  if (typeof url !== 'string' || !url) return false;
+  var base = _normalizeRelayUrl(relay) || COVER_RELAY;
+  return url.indexOf(base) === 0;
 }
 function _b64encode(str) {
   try {
@@ -1961,13 +2002,26 @@ var spider = {
     // v1.0.3：App 点条目时拿条目的 link 字段当 params.link 传给
     // loadDetail；没有 link 就报“模块未提供详情链接”。补上 type 与 link
     //（与 v4.0.0 的 _toItem 写法一致）。
+    // v1.0.7（upload.js / Forward 的写法）：type 改成 App 认识的 'url'
+    // 并补 mediaType: 'tv'——之前 `type: 'huangguo'` 是自造类型，App
+    // 认不出这是可播剧集，才退回 TMDB 标题匹配（枪欲玫瑰被匹配成
+    // Guns N' Roses 乐队就是这么来的）。link 仍是 'huangguo:<id>'，
+    // loadDetail 按它解析，不动。
+    // v1.0.7：Rex 里中转地址的图显示不出来（chunked、无 Content-Length），
+    // 改成标题海报保证有图；明文图直链（有 Content-Length）保留；
+    // 站源里本地代理的真图保留（有 getProxyUrl 就不是 Rex）。
     var pic = it.vod_pic || '';
+    var title = it.vod_name || '';
+    if (pic && (typeof getProxyUrl !== 'function') && _isRelayUrl(pic, this._coverRelay)) {
+      pic = _titlePoster(title);
+    }
     var vid = 'huangguo:' + (it.vod_id || '');
     return {
       id: vid,
-      type: 'huangguo',
+      type: 'url',
       link: vid,
-      title: it.vod_name || '',
+      title: title,
+      mediaType: 'tv',
       cover: pic,
       coverUrl: pic,
       posterPath: pic,
@@ -2039,7 +2093,7 @@ globalThis.__JS_SPIDER__ = spider;
 // （Arcane 的模块行不渲染文本输入框，那个入口点进去是“暂无内容”）。
 var WidgetMetadata = {
   name: '黄果短剧',
-  version: '1.0.6',
+  version: '1.0.7',
   id: 'huangguo.duanju.upload',
   author: 'Muse',
   description: '黄果短剧（upload.py 转换版）：热门推荐/最近上新/黄果原创、AI短剧/漫剧/换脸/魔改、20 个官网题材、专题合集、排行榜、黄果吃瓜；域名自动发现，直链播放',
@@ -2177,6 +2231,10 @@ async function loadDetail(link) {
   var playFrom = item.vod_play_from || '';
   var groups = playUrl.split('$$$');
   var froms = playFrom.split('$$$');
+  // v1.0.7：集号计数（Forward 的 episodeItems 要 seasonNumber /
+  // episodeNumber；hgdj|vid|n 与 hgdjpost|pid|i 的第 3 段就是集号，
+  // 解析不到时用自增序号兜底）。
+  var epIndex = 0;
   groups.forEach(function (g, gi) {
     var parts = g.split('#').filter(function (s) { return !!s; });
     parts.forEach(function (seg) {
@@ -2187,6 +2245,14 @@ async function loadDetail(link) {
       // 就是 { title, id }，loadResource 接 link/id/url）。只给
       // name/url/source 时 App 报“模块未返回可播放集数”。六个字段
       // 同时给，id/url/link 都是集标记（hgdj|vid|n 或 hgdjpost|pid|i）。
+      // v1.0.7（upload.js / Forward 的写法）：每集再补 type: 'url' +
+      // mediaType: 'tv' + seasonNumber/episodeNumber + playerType:
+      // 'app'，让 App 认得出这是可播的剧集。
+      epIndex++;
+      var epNum = 0;
+      var pp = String(pid).split('|');
+      if (pp.length >= 3) epNum = parseInt(pp[2], 10) || 0;
+      if (!epNum) epNum = epIndex;
       episodes.push({
         title: name,
         id: pid,
@@ -2194,19 +2260,38 @@ async function loadDetail(link) {
         url: pid,
         link: pid,
         source: froms[gi] || froms[0] || '黄果短剧',
+        type: 'url',
+        mediaType: 'tv',
+        seasonNumber: 1,
+        episodeNumber: epNum,
+        playerType: 'app',
+        videoUrl: '',
       });
     });
   });
+  // v1.0.7：Rex 里中转地址的图显示不出来（chunked、无 Content-Length），
+  // 改成标题海报保证有图；明文图直链与站源本地代理的真图保留。
+  var dpic = item.vod_pic || '';
+  if (dpic && (typeof getProxyUrl !== 'function') && _isRelayUrl(dpic, spider._coverRelay)) {
+    dpic = _titlePoster(item.vod_name || '');
+  }
   return {
     id: 'huangguo:' + (item.vod_id || id),
+    type: 'url',
     title: item.vod_name || '',
-    cover: item.vod_pic || '',
-    coverUrl: item.vod_pic || '',
-    posterPath: item.vod_pic || '',
-    backdropPath: item.vod_pic || '',
+    cover: dpic,
+    coverUrl: dpic,
+    posterPath: dpic,
+    backdropPath: dpic,
     desc: item.vod_content || '',
     remark: item.vod_remarks || '',
+    mediaType: 'tv',
+    // v1.0.7：选集三个键同时给（episodes、episodeList、episodeItems），
+    // 不管 App 读哪个键都有（rex-diag 只给了前两个；Forward 与
+    // rexhome 用 episodeItems；二进制里 episodes 与 episodeList 都有）。
     episodes: episodes,
+    episodeList: episodes,
+    episodeItems: episodes,
   };
 }
 async function loadResource(link) {
@@ -2219,10 +2304,24 @@ async function loadResource(link) {
   await spider.init();
   var res = await spider.playerContent('', id);
   if (!res || !res.url) return null;
+  // v1.0.7（upload.js / Forward 的资源形状）：原有的 url/parse/header/
+  // format 保留，再补 playerType: 'app' + customHeaders + name/
+  // description，让 App 不管按哪种约定读都有——播放仍用已验证的
+  // POST playback 接口（upload.js 的旧 GET play 接口返回空，不要）。
+  var desc = '黄果';
+  var _pp = String(id).split('|');
+  var _n = _pp.length >= 3 ? parseInt(_pp[2], 10) : 0;
+  if (_pp[0] === 'hgdjpost') desc = '视频' + (_n + 1);
+  else if (_n) desc = '第' + _n + '集';
+  else if (/^\d+$/.test(id)) desc = '第1集';
   return {
     url: res.url,
     parse: res.parse || 0,
     header: res.header || {},
     format: 'hls',
+    playerType: 'app',
+    customHeaders: res.header || {},
+    name: '黄果',
+    description: desc,
   };
 }
