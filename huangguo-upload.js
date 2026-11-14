@@ -1,5 +1,5 @@
 /*
- * 黄果短剧 · Arcane JS 模块 v1.0.7（upload.py 转换版）
+ * 黄果短剧 · Arcane JS 模块 v1.0.8（upload.py 转换版）
  * ============================================================
  * upload.py（TVBox / 影视仓 Python 源，原作者“无聊”，v2 2026-11-08）
  * 转换成的 JS 模块，给 Arcane（CatPaw / com.catpaw.appleplayer.ios）用。
@@ -10,6 +10,27 @@
  *  - 模块入口（首页推荐架）：Rex 模块中心读本文件末尾的
  *    WidgetMetadata 与全局函数（经典脚本加载）。
  * 装一个入口就行，两个都装也可以（内容一致，互不冲突）。
+ *
+ * v1.0.8（2026-11-15）：Brooks 又发来两份——huangguo-fixed.js 与
+ * huangguo-cover-worker.js。Worker 是模块封面的真正解法：Cloudflare
+ * Worker（纯 JS AES-CBC 解密，密钥与 AI.py 一致）替模块解密封面，
+ * 实测返回 200、image/jpeg、**Content-Length: 174816**（不 chunked），
+ * 手机图片加载器终于能读出来——Netlify 中转 chunked、无
+ * Content-Length，才是 v1.0.0–v1.0.6 模块里封面全空的根因；Worker 的
+ * AES 解密与 Node crypto 逐字节一致（本地 workerd 实测）。改动：
+ *   ① `_normalizeRelayUrl` 认 Cloudflare Worker 地址（*.workers.dev，
+ *      根路径 /?u= 直接可用）与 localhost（测试用）；Netlify 根自动补
+ *      /.netlify/functions/cover 的逻辑不动。
+ *   ② 新增 `_isWorkerRelay(relay)`：中转是 Worker（带 Content-Length）
+ *      时，Rex 里封面用中转真图，不再换成标题海报；中转是 Netlify 时
+ *      仍换标题海报（v1.0.7 的兜底）。站源本地代理真图不受影响。
+ *   ③ 默认中转 COVER_RELAY 改成 Brooks 已部署的 Cloudflare Worker
+ *      https://huangguo-cover.tang72276.workers.dev（2026-11-09 部署，
+ *      2026-11-15 实测 /health {"ok":true}、真封面 200 + Content-Length
+ *      174816 + image/jpeg）。Netlify rococo 中转仍可用作备选。
+ * huangguo-fixed.js（合并版 v1.1.3）的条目/选集形状与 v1.0.7 一致
+ * （type 'url' + mediaType 'tv'、episodeItems），但播放用的旧 GET
+ * play 接口（返回空 video_url）不要，分类也比 v1.0.7 少——不照搬。
  *
  * v1.0.7（2026-11-15）：Brooks 发来 upload.js（Forward 播放器的黄果
  * 模块，作者 rex，v1.4.3）参考。模块里封面仍全空、点条目仍报“模块未
@@ -119,10 +140,10 @@
  *    97b60394abc2fbe1），经由 proxy() 解密后返回；图源候选顺序为
  *    原图（带签名）→ 去签名原图 → CDN WebP 派生 → 镜像域；缺图时
  *    返回 64x64 深灰占位图（不裂图）。加密封面默认直接走 Brooks
- *    部署的 Netlify 中转
- *    https://rococo-entremet-86855d.netlify.app/.netlify/functions/cover
- *    （实测返回真 JPEG），不再经过手机上不稳的本地 127.0.0.1 /proxy
- *    链路。
+ *    已部署的 Cloudflare Worker 中转
+ *    https://huangguo-cover.tang72276.workers.dev（根路径 /?u=，
+ *    返回带 Content-Length 的真 JPEG），不再经过手机上不稳的
+ *    本地 127.0.0.1 /proxy 链路；Netlify rococo 中转仍可用作备选。
  *
  * 域名：upload.py 原版只写死 huangguoai.com（需梯子）。本转换版加了
  * 自动发现（与 v4.0.0 同款）：先读官方地址发布接口，再读发布页脚本，
@@ -214,10 +235,13 @@ var PAGE_SIZE = 20; // 服务端固定每页 20 条（吃瓜每页 12 条）
 var HOST_TTL = 6 * 3600 * 1000; // 域名探测结果缓存 6 小时
 var IMG_KEY = 'f5d965df75336270'; // 封面 AES-128-CBC key
 var IMG_IV = '97b60394abc2fbe1'; // 封面 AES-128-CBC iv
-// 封面解密中转（Brooks 部署的 Netlify 函数，实测可返回正常 JPEG）
+// 封面解密中转（Brooks 部署的 Cloudflare Worker，2026-11-09，
+// 实测 /health {"ok":true}、真封面 200 + Content-Length + image/jpeg）
 // 用法：COVER_RELAY + '?u=' + encodeURIComponent(封面地址)
-// ext 里可用 {"coverRelay": "https://…/cover"} 覆盖，设为空字符串则禁用中转。
-var COVER_RELAY = 'https://rococo-entremet-86855d.netlify.app/.netlify/functions/cover';
+// ext 里可用 {"coverRelay": "https://…"} 覆盖，设为空字符串则禁用中转。
+// 备选（Netlify，chunked、无 Content-Length，模块里会换标题海报）：
+// https://rococo-entremet-86855d.netlify.app/.netlify/functions/cover
+var COVER_RELAY = 'https://huangguo-cover.tang72276.workers.dev';
 // 封面超时：直取 6 秒 / 中转 8 秒（单张挂住不再拖住整屏，失败快速让路）
 var COVER_FETCH_TIMEOUT = 6000;
 var COVER_RELAY_TIMEOUT = 8000;
@@ -273,10 +297,13 @@ function _stripRelayQuery(u) {
   var q = s.indexOf('?');
   return q >= 0 ? s.slice(0, q) : s;
 }
-// 中转地址归一化（v1.0.1 新增）：裸 Netlify 站根（…netlify.app 或
-// …netlify.app/，没有 /cover 路径）自动补全 /.netlify/functions/cover；
-// 已带 /cover 的原样返回；其它（裸域名、别的地址、非 URL）返回 '' 表示无效。
-// 调用方对无效值一律不覆盖当前值，避免存过的错地址把默认值污染掉。
+// 中转地址归一化（v1.0.1 新增，v1.0.8 扩到 Worker）：裸 Netlify 站根
+// （…netlify.app 或 …netlify.app/，没有 /cover 路径）自动补全
+// /.netlify/functions/cover；已带 /cover 的原样返回；Cloudflare Worker
+// 地址（*.workers.dev，根路径 /?u=）与 localhost（测试用）原样返回，
+// 因为 Worker 响应自带 Content-Length、真图能直接显示；其它（裸域名、
+// 别的地址、非 URL）返回 '' 表示无效。调用方对无效值一律不覆盖当前值，
+// 避免存过的错地址把默认值污染掉。
 function _normalizeRelayUrl(u) {
   if (typeof u !== 'string') return '';
   var s = _stripRelayQuery(u.trim());
@@ -286,10 +313,24 @@ function _normalizeRelayUrl(u) {
   var host = m[1].toLowerCase();
   var path = m[2] || '';
   if (path.indexOf('/cover') >= 0) return s;
+  // v1.0.8：Cloudflare Worker 中转（*.workers.dev，根路径 /?u=）与
+  // localhost（本地 wrangler 测试）直接可用——Worker 返回带
+  // Content-Length 的真图，App 图片加载器能读出来。
+  if (host.slice(-12) === '.workers.dev' || host === 'localhost' || host.indexOf('127.0.0.1') === 0) return s;
   if (host.slice(-12) === '.netlify.app' && (path === '' || path === '/')) {
     return s.replace(/\/?$/, '') + '/.netlify/functions/cover';
   }
   return '';
+}
+// v1.0.8：当前中转是不是 Cloudflare Worker（或 localhost 测试地址）。
+// Worker 响应自带 Content-Length、真图能直接显示，Rex 里就不用换成
+// 标题海报；Netlify 中转是 chunked、无 Content-Length，仍换标题海报。
+function _isWorkerRelay(relay) {
+  var base = _normalizeRelayUrl(relay) || COVER_RELAY;
+  try {
+    var h = new URL(base).hostname.toLowerCase();
+    return h.slice(-12) === '.workers.dev' || h === 'localhost' || h.indexOf('127.0.0.1') === 0;
+  } catch (e) { return false; }
 }
 // v1.0.7：标题海报（upload.js / Forward 的做法，保证列表有图）。
 // placehold.co 实测 200、带 Content-Length、480x720 真 PNG，中文标题
@@ -2010,9 +2051,11 @@ var spider = {
     // v1.0.7：Rex 里中转地址的图显示不出来（chunked、无 Content-Length），
     // 改成标题海报保证有图；明文图直链（有 Content-Length）保留；
     // 站源里本地代理的真图保留（有 getProxyUrl 就不是 Rex）。
+    // v1.0.8：中转是 Cloudflare Worker（带 Content-Length）时不换海报，
+    // 中转真图能直接显示；只有 Netlify 中转才换标题海报。
     var pic = it.vod_pic || '';
     var title = it.vod_name || '';
-    if (pic && (typeof getProxyUrl !== 'function') && _isRelayUrl(pic, this._coverRelay)) {
+    if (pic && (typeof getProxyUrl !== 'function') && _isRelayUrl(pic, this._coverRelay) && !_isWorkerRelay(this._coverRelay)) {
       pic = _titlePoster(title);
     }
     var vid = 'huangguo:' + (it.vod_id || '');
@@ -2093,7 +2136,7 @@ globalThis.__JS_SPIDER__ = spider;
 // （Arcane 的模块行不渲染文本输入框，那个入口点进去是“暂无内容”）。
 var WidgetMetadata = {
   name: '黄果短剧',
-  version: '1.0.7',
+  version: '1.0.8',
   id: 'huangguo.duanju.upload',
   author: 'Muse',
   description: '黄果短剧（upload.py 转换版）：热门推荐/最近上新/黄果原创、AI短剧/漫剧/换脸/魔改、20 个官网题材、专题合集、排行榜、黄果吃瓜；域名自动发现，直链播放',
@@ -2271,8 +2314,9 @@ async function loadDetail(link) {
   });
   // v1.0.7：Rex 里中转地址的图显示不出来（chunked、无 Content-Length），
   // 改成标题海报保证有图；明文图直链与站源本地代理的真图保留。
+  // v1.0.8：中转是 Cloudflare Worker（带 Content-Length）时不换海报。
   var dpic = item.vod_pic || '';
-  if (dpic && (typeof getProxyUrl !== 'function') && _isRelayUrl(dpic, spider._coverRelay)) {
+  if (dpic && (typeof getProxyUrl !== 'function') && _isRelayUrl(dpic, spider._coverRelay) && !_isWorkerRelay(spider._coverRelay)) {
     dpic = _titlePoster(item.vod_name || '');
   }
   return {

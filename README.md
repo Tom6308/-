@@ -202,8 +202,39 @@ reply）都不要；播放仍用已验证的 POST playback 接口。测试 169/1
 a06c52c9，jsDelivr purge 后已是 v1.0.7，200、103,565 字节、md5
 `93c570e7…` 与本地逐字节一致）。
 
-> 直链（GitHub，永久，2026-11-15 00:47 已验证：200、103,565 字节、与本地
-> v1.0.7 逐字节一致）：主用 jsDelivr
+**v1.0.8 的变化（2026-11-15，模块封面的真正解法：Cloudflare Worker）**：
+Brooks 又发来 huangguo-fixed.js（合并版 v1.1.3）与
+huangguo-cover-worker.js（Cloudflare Worker 封面解密中转，纯 JS
+AES-CBC，密钥与 AI.py 一致）。Worker 已逐字节验证：拿 id=12 的真实
+加密封面实测，Worker 的 `_aesCbcDecrypt` 输出与 Node crypto **逐字
+节一致**；本地 workerd 实测 `/?u=<加密图>` 返回 200、image/jpeg、
+**Content-Length: 174816**（不 chunked）——这正是手机图片加载器要
+的，Netlify 中转 chunked、无 Content-Length 才是 v1.0.0–v1.0.6 模块
+里封面全空的根因。改动：① `_normalizeRelayUrl` 认 Cloudflare
+Worker 地址（`*.workers.dev`，根路径 `/?u=` 直接可用）与 localhost
+（测试用）；② 新增 `_isWorkerRelay(relay)`：中转是 Worker 时 Rex
+里封面用中转真图，不再换标题海报；中转是 Netlify 时仍换标题海报
+（v1.0.7 的兜底）；③ **默认中转 COVER_RELAY 改成 Brooks 已部署的
+Cloudflare Worker `https://huangguo-cover.tang72276.workers.dev`**
+（2026-11-09 部署，2026-11-15 实测 `/health` 返回
+`{"ok":true,"source":"huangguo-cover"}`、真封面 200 +
+Content-Length 174816 + image/jpeg；另有同名 Pages 项目
+`huangguo-cover.pages.dev` 与 `huangguo-cover2.pages.dev`，是 6 天
+前另两次部署，与 Worker 不是同一个东西，别用 Pages 的地址当中
+转）。部署过程小插曲：云端浏览器登 Cloudflare 被 Google 验证卡住
+（不认的设备要手机点 47），且该 Google 账号一度被 Cloudflare 弹回
+“Unable to sign in”；Brooks 自己在手机上登进 dash.cloudflare.com
+后截图证实 Worker 早已在账号里（`huangguo-cover.tang72276.workers.dev`，
+6 天前），直接实测通过，不用重新部署。测试 180/180 通过（含 11 项
+v1.0.8 新检查：Worker 地址识别、默认中转是 Worker、Rex 封面是
+Worker 中转真图、线上 Worker 实时解密 200 + Content-Length + JPEG；
+另有 1 次 probe_tap 里 Worker 对 枪欲玫瑰 封面返回 503，重试即
+200，是一过性上游波动）。已推到同一 GitHub 仓库（commit 待填，
+jsDelivr purge 后已是 v1.0.8，200、106,856 字节、md5 `bb652142…` 与
+本地逐字节一致）。
+
+> 直链（GitHub，永久，2026-11-15 01:15 已验证：200、106,856 字节、与本地
+> v1.0.8 逐字节一致）：主用 jsDelivr
 > `https://cdn.jsdelivr.net/gh/Tom6308/-@main/huangguo-upload.js`
 > （Content-Type: application/javascript），备用 GitHub raw
 > `https://raw.githubusercontent.com/Tom6308/-/main/huangguo-upload.js`。
@@ -221,7 +252,7 @@ a06c52c9，jsDelivr purge 后已是 v1.0.7，200、103,565 字节、md5
 
 ```text
 huangguo_arcane/
-├── huangguo-upload.js   # JS 模块 v1.0.7（upload.py 转换，站源 + Rex 二合一，无 export）
+├── huangguo-upload.js   # JS 模块 v1.0.8（upload.py 转换，站源 + Rex 二合一，无 export）
 │                         # 站源入口加载它：首页/分类/详情/搜索/播放/图片代理；
 │                         # 模块入口加载它：首页推荐架 + 搜索 + 详情 + 播放源
 ├── huangguo.js           # JS 模块 v4.0.0（AI.py 改写，站源 + Rex 二合一，无 export）
@@ -237,7 +268,7 @@ huangguo_arcane/
 └── README.md            # 本说明
 ```
 
-主文件有两个（都能独立用，装一个就行）：`huangguo-upload.js` v1.0.7
+主文件有两个（都能独立用，装一个就行）：`huangguo-upload.js` v1.0.8
 （upload.py 转换版，多了吃瓜）和 `huangguo.js` v4.0.0（AI.py 改写版，
 分类更多，31 个）。一个文件两个入口，行为一致；**装一个入口就行**。
 旧的纯站源版（`huangguo-arcane.js` v3.3.3）保留在目录里仅作参照，
@@ -492,14 +523,17 @@ node --experimental-vm-modules test_v4.mjs
 # RESULT: PASS 87 / FAIL 0
 ```
 
-### v1.0.7（upload.py 转换版）测试结果
+### v1.0.8（upload.py 转换版）测试结果
 
 测试方法：`node --experimental-vm-modules test_upload.mjs`，与 v4.0.0
 同样的两种运行时模拟（tvbox 沙箱 `vm.SourceTextModule` +
 `__JS_SPIDER__`；Rex 沙箱经典脚本 + `WidgetMetadata`），再对真实 API
-做全量 live 测试。2026-11-15 00:47 结果：**169/169 通过**（v1.0.6
-为 162/162，新增 7 项 v1.0.7 检查：标题海报封面、type/mediaType、
-三个选集键、选集字段、loadResource 补全、海报实测可取）。
+做全量 live 测试。2026-11-15 01:15 结果：**180/180 通过**（v1.0.7
+为 169/169，新增 11 项 v1.0.8 检查：Worker 地址识别（workers.dev
+与 localhost 原样通过）、`_isWorkerRelay`（Worker 真、Netlify 假、
+默认中转真）、Worker 中转下列表/详情封面是 Worker 中转真图、线上
+Worker 实时解密 200 + Content-Length + JPEG、Netlify 中转仍回落
+标题海报）。
 
 | 检查点 | 结果 |
 |---|---|
@@ -522,14 +556,14 @@ node --experimental-vm-modules test_v4.mjs
 | **本地代理封面全链路：拿一条首页 `vod_pic`（本地 /proxy 地址），按 Arcane /proxy 处理器的方式调 `spider.proxy()`，返回 200 真图（JPEG 或 PNG）** | **通过（v1.0.6 新增）** |
 | **分类页回归：AI换脸（filter 与 extend 两种传法都通，20/28 条）、熟女 28 条、乱伦 28 条、ai-duanju filter sort=hot、排行榜 filter rank_type=potential** | **通过（v1.0.6 新增）** |
 | 域名轮换：host 指到死域名后自动回到可用域名并返回内容 | 通过 |
-| Rex：元数据 v1.0.7、31 个模块、搜索、详情 21 集、吃瓜详情、播放源 | 通过 |
+| Rex：元数据 v1.0.8、31 个模块、搜索、详情 21 集、吃瓜详情、播放源 | 通过 |
 | **Rex 播放：`loadResource` `hgdj|12|1`/`hgdj|12|2` 均为 `parse: 0` + m3u8 + `x-cdn-auth`，`format: hls`；对象 `{link}` 参数也通** | **通过** |
-| **Rex 封面 v1.0.7：列表/详情的 `posterPath`/`backdropPath`/`cover`/`coverUrl` 都是标题海报地址（placehold.co，带 Content-Length、480x720 真 PNG，实测可取 200），不再是中转地址（中转响应 chunked、无 Content-Length，手机上整屏空白）；永不 `proxy://`** | **通过（v1.0.7 更新）** |
+| **Rex 封面 v1.0.8：列表/详情的 `posterPath`/`backdropPath`/`cover`/`coverUrl` 都是 Worker 中转真图地址（`huangguo-cover.tang72276.workers.dev?u=…`，线上 Worker 实测 200 + Content-Length + JPEG）；默认中转已是 Worker，不再是 Netlify；Netlify 中转时仍换标题海报（v1.0.7 兜底）；永不 `proxy://`** | **通过（v1.0.8 更新）** |
 | **Rex 点条目：条目带 `type: 'url'` + `mediaType: 'tv'` 与 `link: 'huangguo:<id>'`；拿条目的 `link` 调 `loadDetail` 能拿到详情和集数（模拟 App 点条目链路）** | **通过（v1.0.7 更新，v1.0.3 新增）** |
 | **Rex 点选集：选集带 `title` + `id`（`hgdj|vid|n`）+ `seasonNumber`/`episodeNumber`/`playerType: 'app'`；详情同时给 `episodes`/`episodeList`/`episodeItems` 三个键；拿选集的 `id` 调 `loadResource` 能取到 `parse: 0` 直链（模拟 App 点选集 → 播放链路）** | **通过（v1.0.7 新增）** |
 | **Rex loadResource：再补 `playerType: 'app'` + `customHeaders`（含 x-cdn-auth）+ `name: '黄果'` + `description: '第1集'`（Forward 的资源形状）** | **通过（v1.0.7 新增）** |
 | **Rex 中转自愈：存了裸站根 → 自动补全函数地址；存了无效值 → 用默认；`coverRelayFirst=false` 时仍走中转、永不 `proxy://`；「封面中转链接」入口行已删** | **通过（v1.0.1 新增）** |
-| **Rex 新分类：最近上新 28 条（首条 13727 纯情校花堕落记）、黄果原创 39 条（首条 13688 逍遥安平王）、题材行 dushi/xianxia 均有内容且封面为标题海报** | **通过（v1.0.7 更新，v1.0.5 新增）** |
+| **Rex 新分类：最近上新 28 条（首条 13727 纯情校花堕落记）、黄果原创 39 条（首条 13688 逍遥安平王）、题材行 dushi/xianxia 均有内容且封面为 Worker 中转真图** | **通过（v1.0.8 更新，v1.0.5 新增）** |
 
 复现：
 
